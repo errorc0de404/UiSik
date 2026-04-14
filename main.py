@@ -2,17 +2,20 @@ import os
 import json
 import re
 import threading
-from datetime import datetime, timedelta, timezone  # 이 부분을 수정하여 통일했습니다.
+from datetime import datetime, timedelta, timezone  
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 
 app = FastAPI()
 
 # --- 설정 및 초기화 ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KEY를_붙여넣으세요")
-genai.configure(api_key=GOOGLE_API_KEY)
+
+# 구글 API 클라이언트 최신 규격으로 초기화
+client = genai.Client(api_key=GOOGLE_API_KEY)
 MODEL_NAME = 'gemini-3.0-flash'
 JSON_FILE_PATH = "current_menu.json"
 
@@ -25,7 +28,6 @@ update_lock = threading.Lock()
 
 # --- 유틸 함수 ---
 def get_date_key(days_offset=0):
-    # datetime.datetime.now() 대신 datetime.now() 사용
     target_date = datetime.now(KST) + timedelta(days=days_offset)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     return f"{target_date.month:02d}월 {target_date.day:02d}일 {weekdays[target_date.weekday()]}요일"
@@ -62,7 +64,6 @@ def update_menu_data():
             return
 
         merged_daily_menus = {}
-        model = genai.GenerativeModel(MODEL_NAME, generation_config={"response_mime_type": "application/json"})
 
         # 상위 2개 게시물 파싱 후 데이터 병합
         for article_no in target_article_nos:
@@ -100,7 +101,15 @@ def update_menu_data():
             }
             빈 식단은 items에 ["미운영"] 삽입, calories는 null 처리. week_key는 이미지의 주간 기간을 숫자만 사용해 추출(예: 0413_0417).
             """
-            response = model.generate_content([img, prompt])
+            
+            # --- 최신 API 호출 규격 적용 ---
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=[img, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                )
+            )
             
             try:
                 menu_data = json.loads(response.text)
