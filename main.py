@@ -9,14 +9,16 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+# 로컬에서 작동시  uvicorn main:app --reload
+
 app = FastAPI()
 
 # --- 설정 및 초기화 ---
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KEY를_붙여넣으세요")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "default")
 
 # 구글 API 클라이언트 최신 규격으로 초기화
 client = genai.Client(api_key=GOOGLE_API_KEY)
-MODEL_NAME = 'gemini-flash-latest' # 아니 3.0 왜 안되는데
+MODEL_NAME = 'gemini-flash-latest'
 JSON_FILE_PATH = "current_menu.json"
 
 # --- Time zone 반영 ---
@@ -24,7 +26,7 @@ KST = timezone(timedelta(hours=9))
 
 # --- 동시 업데이트 방지 ---
 is_updating = False
-update_lock = threading.Lock()
+update_lock = threading.Lock() # 만에 하나.. 굳이 필요는 없지만 그냥 넣어둠
 
 # --- 유틸 함수 ---
 def get_date_key(days_offset=0):
@@ -90,7 +92,6 @@ def update_menu_data():
             2. 파란색 칼로리(kcal) 수치 추출
             3. 아래 JSON 구조로 출력:
             {
-              "week_key": "0413_0417",
               "daily_menus": {
                 "04월 13일 월요일": {
                   "lunch_korean": {"items": ["메뉴1", "메뉴2"], "calories": 989, "price": 6000},
@@ -99,7 +100,7 @@ def update_menu_data():
                 }
               }
             }
-            빈 식단은 items에 ["미운영"] 삽입, calories는 null 처리. week_key는 이미지의 주간 기간을 숫자만 사용해 추출(예: 0413_0417).
+            빈 식단은 items에 ["미운영"] 삽입, calories는 null 처리.
             """
             
             # --- 최신 API 호출 규격 적용 ---
@@ -133,7 +134,6 @@ def update_menu_data():
     except Exception as e:
         print(f"❌ 파싱 중 오류 발생: {e}")
 
-
 # --- 공통 카카오톡 응답 생성기 ---
 def generate_kakao_response(target_key: str, background_tasks: BackgroundTasks):
     global is_updating
@@ -156,30 +156,39 @@ def generate_kakao_response(target_key: str, background_tasks: BackgroundTasks):
             if not is_updating:
                 is_updating = True
                 background_tasks.add_task(safe_update_menu_data)
+            else:
+                print(f"[{datetime.now()}] 🔄 식단표 파싱이 이미 진행중입니다.")
 
     today_menu = menu_data.get("daily_menus", {}).get(target_key)
     
     if not menu_data:
-         response_text = "🔄 최신 식단표를 불러오고 분석하는 중입니다.\n1~2분 뒤에 다시 요청해 주세요!"
+         response_text = "🔄 서버가 최신 식단표를 불러오는 중이에요.\n1~2분 뒤에 다시 요청해 주세요!"
     elif not today_menu:
-         response_text = f"❌ {target_key}의 식단 정보가 없습니다.\n(주말이거나 아직 업로드되지 않은 날짜입니다.)"
+         response_text = f"❌ {target_key}의 식단 정보가 없어요.\n(주말이거나 아직 업로드되지 않은 날짜에요.)"
     else:
-        response_text = f"🍽️ [{target_key} 학식]\n\n"
+        response_text = f"🍽️  {target_key} 학식\n\n"
         
-        if "lunch_korean" in today_menu:
-            items = ", ".join(today_menu["lunch_korean"].get("items", []))
-            cal = today_menu["lunch_korean"].get("calories", "표기없음")
-            response_text += f"🍚 점심(한식)\n{items}\n({cal} kcal)\n\n"
-            
-        if "lunch_international" in today_menu:
-            items = ", ".join(today_menu["lunch_international"].get("items", []))
-            cal = today_menu["lunch_international"].get("calories", "표기없음")
-            response_text += f"🍝 점심(인터)\n{items}\n({cal} kcal)\n\n"
-            
-        if "dinner_korean" in today_menu:
-            items = ", ".join(today_menu["dinner_korean"].get("items", []))
-            cal = today_menu["dinner_korean"].get("calories", "표기없음")
-            response_text += f"🥘 저녁\n{items}\n({cal} kcal)"
+        meal_types = [
+            ("lunch_korean", "🍚 점심(한식)"),
+            ("lunch_international", "🍝 점심(인터)"),
+            ("dinner_korean", "🥘 저녁")
+        ]
+
+        for key, label in meal_types:
+            if key in today_menu:
+                meal = today_menu[key]
+                items = ", ".join(meal.get("items", []))
+                cal = meal.get("calories")
+                
+                response_text += f"{label}\n{items}\n"
+                
+                # "미운영"이 아니고 칼로리 정보가 있을 때만 칼로리 표시
+                if "미운영" not in items and cal is not None:
+                    response_text += f"({cal} kcal)\n\n"
+                else:
+                    response_text += "\n" # 미운영일 때는 칼로리 없이 줄바꿈만 추가
+
+        response_text = response_text.strip() # 마지막 불필요한 공백 제거
 
     return {
         "version": "2.0",
@@ -211,7 +220,7 @@ async def get_menu_tm2_chatbot(request: Request, background_tasks: BackgroundTas
     """내일 모레 식단"""
     return generate_kakao_response(get_date_key(2), background_tasks)
 
-@app.api_route("/api/showjson", methods=["GET", "HEAD"])
+@app.get("/api/showjson")
 async def get_show_json(request: Request):
     """디버깅용 json 전체 보여주기"""
     menu_data = {}
@@ -224,6 +233,10 @@ async def get_show_json(request: Request):
             return {"status": "error", "message": f"파일 읽기/파싱 실패: {e}"}
     
     return {"status": "error", "message": f"식단 파일이 생성되지 않았습니다."}
+
+@app.head("/api/alive")
+async def for_uptime():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
