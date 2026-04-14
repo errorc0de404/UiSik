@@ -13,7 +13,7 @@ app = FastAPI()
 # --- 설정 및 초기화 ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KEY를_붙여넣으세요")
 genai.configure(api_key=GOOGLE_API_KEY)
-MODEL_NAME = 'gemini-3.1-flash-lite'
+MODEL_NAME = 'gemini-3.0-flash'
 JSON_FILE_PATH = "current_menu.json"
 
 # --- Time zone 반영 ---
