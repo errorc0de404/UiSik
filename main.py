@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import threading
 import datetime
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -14,6 +15,10 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KE
 genai.configure(api_key=GOOGLE_API_KEY)
 MODEL_NAME = 'gemini-2.5-flash'
 JSON_FILE_PATH = "current_menu.json"
+
+# --- 동시 업데이트 방지 ---
+is_updating = False
+update_lock = threading.Lock()
 
 # --- 유틸 함수 ---
 def get_this_week_key():
@@ -32,6 +37,15 @@ def get_date_key(days_offset=0):
     return f"{month}월 {day}일 {weekday_str}요일"
 
 # --- 코어 로직: 파싱 및 캐싱 ---
+def safe_update_menu_data():
+    """백그라운드 태스크 실행 및 상태 해제를 보장하는 래퍼 함수"""
+    global is_updating
+    try:
+        update_menu_data()
+    finally:
+        with update_lock:
+            is_updating = False
+
 def update_menu_data():
     """크롤링 및 Gemini API를 통해 최신 식단(상위 2개)을 파싱하여 JSON으로 저장하는 함수"""
     print(f"[{datetime.datetime.now()}] 🔄 식단표 파싱 업데이트 시작...")
@@ -120,6 +134,7 @@ def update_menu_data():
 
 # --- 공통 카카오톡 응답 생성기 ---
 def generate_kakao_response(target_key: str, background_tasks: BackgroundTasks):
+    global is_updating
     needs_update = True
     menu_data = {}
     
@@ -135,7 +150,10 @@ def generate_kakao_response(target_key: str, background_tasks: BackgroundTasks):
 
     # 요청한 날짜의 식단이 없으면 파싱 백그라운드 작업 추가
     if needs_update:
-        background_tasks.add_task(update_menu_data)
+        with update_lock:
+            if not is_updating:
+                is_updating = True
+                background_tasks.add_task(safe_update_menu_data)
 
     today_menu = menu_data.get("daily_menus", {}).get(target_key)
     
@@ -190,6 +208,20 @@ async def get_menu_tm1_chatbot(request: Request, background_tasks: BackgroundTas
 async def get_menu_tm2_chatbot(request: Request, background_tasks: BackgroundTasks):
     """내일 모레 식단"""
     return generate_kakao_response(get_date_key(2), background_tasks)
+
+@app.get("/api/showjson")
+async def get_show_json(request: Request):
+    """디버깅용 json 전체 보여주기"""
+    menu_data = {}
+    if os.path.exists(JSON_FILE_PATH):
+        try:
+            with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
+                menu_data = json.load(f)
+                return menu_data
+        except Exception:
+            return {"status": "error", "message": f"파일 읽기/파싱 실패: {e}"}
+    
+    {"status": "error", "message": f"식단 파일이 생성되지 않았습니다."}
 
 if __name__ == "__main__":
     import uvicorn
