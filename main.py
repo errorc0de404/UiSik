@@ -2,7 +2,7 @@ import os
 import json
 import re
 import threading
-import datetime
+from datetime import datetime, timedelta, timezone
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 import google.generativeai as genai
@@ -13,28 +13,21 @@ app = FastAPI()
 # --- 설정 및 초기화 ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KEY를_붙여넣으세요")
 genai.configure(api_key=GOOGLE_API_KEY)
-MODEL_NAME = 'gemini-2.5-flash'
+MODEL_NAME = 'gemini-3.1-flash-lite'
 JSON_FILE_PATH = "current_menu.json"
+
+# --- Time zone 반영 ---
+KST = timezone(timedelta(hours=9))
 
 # --- 동시 업데이트 방지 ---
 is_updating = False
 update_lock = threading.Lock()
 
 # --- 유틸 함수 ---
-def get_this_week_key():
-    now = datetime.datetime.now()
-    monday = now - datetime.timedelta(days=now.weekday())
-    friday = monday + datetime.timedelta(days=4)
-    return f"{monday.strftime('%m%d')}_{friday.strftime('%m%d')}"
-
 def get_date_key(days_offset=0):
-    """오늘 기준으로 days_offset일 뒤의 날짜를 JSON 키 형식에 맞게 반환"""
-    target_date = datetime.datetime.now() + datetime.timedelta(days=days_offset)
-    month = f"{target_date.month:02d}"
-    day = f"{target_date.day:02d}"
+    target_date = datetime.now(KST) + timedelta(days=days_offset)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-    weekday_str = weekdays[target_date.weekday()]
-    return f"{month}월 {day}일 {weekday_str}요일"
+    return f"{target_date.month:02d}월 {target_date.day:02d}일 {weekdays[target_date.weekday()]}요일"
 
 # --- 코어 로직: 파싱 및 캐싱 ---
 def safe_update_menu_data():
@@ -104,7 +97,7 @@ def update_menu_data():
                 }
               }
             }
-            빈 식단은 items에 ["운영 없음"] 삽입, calories는 null 처리. week_key는 이미지의 주간 기간을 숫자만 사용해 추출(예: 0413_0417).
+            빈 식단은 items에 ["미운영"] 삽입, calories는 null 처리. week_key는 이미지의 주간 기간을 숫자만 사용해 추출(예: 0413_0417).
             """
             response = model.generate_content([img, prompt])
             
@@ -119,7 +112,6 @@ def update_menu_data():
 
         # 병합된 데이터로 최종 파일 저장
         final_data = {
-            "week_key": get_this_week_key(),  # 참고용으로 유지
             "daily_menus": merged_daily_menus
         }
 
