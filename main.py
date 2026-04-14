@@ -16,7 +16,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "여기에_발급받은_API_KE
 
 # 구글 API 클라이언트 최신 규격으로 초기화
 client = genai.Client(api_key=GOOGLE_API_KEY)
-MODEL_NAME = 'gemini-2.5-flash' # 아니 3.0 왜 안되는데
+MODEL_NAME = 'gemini-flash-latest' # 아니 3.0 왜 안되는데
 JSON_FILE_PATH = "current_menu.json"
 
 # --- Time zone 반영 ---
