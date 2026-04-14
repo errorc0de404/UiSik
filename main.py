@@ -2,8 +2,7 @@ import os
 import json
 import re
 import threading
-import datetime
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone  # 이 부분을 수정하여 통일했습니다.
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 import google.generativeai as genai
@@ -26,6 +25,7 @@ update_lock = threading.Lock()
 
 # --- 유틸 함수 ---
 def get_date_key(days_offset=0):
+    # datetime.datetime.now() 대신 datetime.now() 사용
     target_date = datetime.now(KST) + timedelta(days=days_offset)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     return f"{target_date.month:02d}월 {target_date.day:02d}일 {weekdays[target_date.weekday()]}요일"
@@ -42,7 +42,7 @@ def safe_update_menu_data():
 
 def update_menu_data():
     """크롤링 및 Gemini API를 통해 최신 식단(상위 2개)을 파싱하여 JSON으로 저장하는 함수"""
-    print(f"[{datetime.datetime.now()}] 🔄 식단표 파싱 업데이트 시작...")
+    print(f"[{datetime.now()}] 🔄 식단표 파싱 업데이트 시작...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     list_url = "https://medicine.korea.ac.kr/api/article/157?instNo=4&boardNo=157&startIndex=1&pageRow=10"
     
@@ -119,7 +119,7 @@ def update_menu_data():
         with open(JSON_FILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(final_data, f, indent=2, ensure_ascii=False)
             
-        print(f"[{datetime.datetime.now()}] ✅ 파싱 및 병합 저장 완료! (게시물 {len(target_article_nos)}개 반영)")
+        print(f"[{datetime.now()}] ✅ 파싱 및 병합 저장 완료! (게시물 {len(target_article_nos)}개 반영)")
         
     except Exception as e:
         print(f"❌ 파싱 중 오류 발생: {e}")
@@ -202,7 +202,7 @@ async def get_menu_tm2_chatbot(request: Request, background_tasks: BackgroundTas
     """내일 모레 식단"""
     return generate_kakao_response(get_date_key(2), background_tasks)
 
-@app.get("/api/showjson")
+@app.api_route("/api/showjson", methods=["GET", "HEAD"])
 async def get_show_json(request: Request):
     """디버깅용 json 전체 보여주기"""
     menu_data = {}
@@ -211,10 +211,10 @@ async def get_show_json(request: Request):
             with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
                 menu_data = json.load(f)
                 return menu_data
-        except Exception:
+        except Exception as e:
             return {"status": "error", "message": f"파일 읽기/파싱 실패: {e}"}
     
-    {"status": "error", "message": f"식단 파일이 생성되지 않았습니다."}
+    return {"status": "error", "message": f"식단 파일이 생성되지 않았습니다."}
 
 if __name__ == "__main__":
     import uvicorn
