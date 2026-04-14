@@ -2,5 +2,5 @@ fastapi
 uvicorn
 requests
 pillow
-google-generativeai
+google-genai
 python-multipart
