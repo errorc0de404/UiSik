@@ -1,2 +1,2 @@
 # UiSik
-This program gets lunch menu of Korea university med school.
+고대의대 학생식당 점심 메뉴를 파싱해서 보여주는 카카오톡 챗봇 용 파이썬 스크립트
