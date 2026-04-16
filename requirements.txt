@@ -4,3 +4,4 @@ requests
 pillow
 google-genai
 python-multipart
+holidays
