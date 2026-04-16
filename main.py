@@ -62,7 +62,6 @@ def check_date_exists_in_notices(target_date):
             title = article.get("title", "")
             if "식단표" in title:
                 date_range = parse_date_range_from_title(title)
-                print(f"Extracted date range: {date_range}")
                 if date_range:
                     start, end = date_range
                     if start <= target_date.date() <= end:
@@ -172,8 +171,13 @@ def generate_kakao_response(days_offset: int, background_tasks: BackgroundTasks)
     # 1. JSON 확인
     menu_data = {}
     if os.path.exists(JSON_FILE_PATH):
-        with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
-            menu_data = json.load(f)
+        try:
+            with open(JSON_FILE_PATH, 'r', encoding='utf-8') as f:
+                menu_data = json.load(f)
+        except json.decoder.JSONDecodeError:
+            # 파일이 읽히는 도중이거나 깨졌을 경우 무시
+            print("⚠️ JSON 파일 읽기 실패. 빈 데이터로 처리합니다.")
+            menu_data = {}
     
     today_menu = menu_data.get("daily_menus", {}).get(target_key)
     if today_menu:
