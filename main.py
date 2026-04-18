@@ -1,12 +1,12 @@
 import os
 import json
 import re
+import io
 import threading
 import holidays
 from datetime import datetime, timedelta, timezone
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
-from fastapi.exceptions import RequestValidationError
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -16,6 +16,7 @@ app = FastAPI()
 
 current_year = datetime.now().year
 kr_holidays = holidays.KR(years=[current_year, current_year + 1])
+last_holiday_check = 2026
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "default")
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -34,30 +35,53 @@ def parse_date_range_from_title(title):
     
     start_str, end_str = match.groups()
     try:
-        current_yr = datetime.now(KST).year
-        start_date = datetime.strptime(f"{current_yr}{start_str}", "%Y%m%d").date()
-        end_date = datetime.strptime(f"{current_yr}{end_str}", "%Y%m%d").date()
+        now = datetime.now(KST)
+        current_yr = now.year
+        start_month = int(start_str[:2])
+        
+        if now.month == 1 and start_month == 12:
+            base_yr = current_yr - 1
+        elif now.month == 12 and start_month == 1:
+            base_yr = current_yr + 1
+        else:
+            base_yr = current_yr
+
+        start_date = datetime.strptime(f"{base_yr}{start_str}", "%Y%m%d").date()
+        end_date = datetime.strptime(f"{base_yr}{end_str}", "%Y%m%d").date()
         
         if end_date < start_date:
-            end_date = end_date.replace(year=current_yr + 1)
+            end_date = end_date.replace(year=end_date.year + 1)
             
         return start_date, end_date
     except:
         return None
 
+def format_date_to_korean(date_str):
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        weekdays = ["월", "화", "수", "목", "금", "토", "일"]
+        return f"{date_obj.month:02d}월 {date_obj.day:02d}일 {weekdays[date_obj.weekday()]}요일"
+    except:
+        return date_str
+
+def unix_timestamp_to_date_str(timestamp_ms):
+    try:
+        date_obj = datetime.fromtimestamp(timestamp_ms / 1000, tz=KST).date()
+        return date_obj.strftime("%Y-%m-%d")
+    except:
+        return None
+
 def check_date_exists_in_notices(target_date):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    list_url = "https://medicine.korea.ac.kr/api/article/157?instNo=4&boardNo=157&startIndex=1&pageRow=10"
+    list_url = "https://medicine.korea.ac.kr/api/article/157?instNo=4&boardNo=157&startIndex=1&pageRow=4&title=식단"
     
     try:
         res = requests.get(list_url, headers=headers, timeout=5)
-        # 1. 응답이 정상인지 확인 (IP 차단 방어)
         if res.status_code != 200:
-            print(f"⚠️ 사이트 접근 실패 (상태 코드: {res.status_code}) - IP 차단 의심")
+            print(f"⚠️ 공지사항 접근 실패 (상태 코드: {res.status_code})")
             return False
             
-        list_data = res.json()
-        
+        list_data = res.json()       
         count = 0
         for article in list_data.get("list", []):
             title = article.get("title", "")
@@ -77,14 +101,16 @@ def check_date_exists_in_notices(target_date):
 def update_menu_data():
     global is_updating
     print(f"[{datetime.now()}] 🔄 백그라운드 업데이트 시작...")
+
+    # 메뉴 가져오기
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    list_url = "https://medicine.korea.ac.kr/api/article/157?instNo=4&boardNo=157&startIndex=1&pageRow=10"
-    
+    list_url = "https://medicine.korea.ac.kr/api/article/157?instNo=4&boardNo=157&startIndex=1&pageRow=4&title=식단"
+
     try:
         print(f"[{datetime.now()}] 목록 API 요청 시작: {list_url}")
         res_list = requests.get(list_url, headers=headers, timeout=10)
         if res_list.status_code != 200:
-            print(f"⚠️ 백그라운드 업데이트 실패 (상태 코드: {res_list.status_code})")
+            print(f"⚠️ 목록 불러오기 실패 (상태 코드: {res_list.status_code})")
             return
             
         try:
@@ -124,28 +150,31 @@ def update_menu_data():
             img_res = requests.get(f"https://medicine.korea.ac.kr{img_path}", headers=headers)
             print(f"[{datetime.now()}] 이미지 다운로드 상태(articleNo={article_no}): {img_res.status_code}")
 
-            temp_img = f"temp_{article_no}.jpg"
-            with open(temp_img, 'wb') as f:
-                f.write(img_res.content)
-            print(f"[{datetime.now()}] 임시 이미지 저장 완료: {temp_img}")
+            img = Image.open(io.BytesIO(img_res.content))
 
-            print(f"[{datetime.now()}] Gemini 처리 시작 : {temp_img}")
-            img = Image.open(temp_img)
-            prompt = """
+            # 게시물 업로드 날짜 추출
+            article = next((a for a in list_data.get("list", []) if a.get("articleNo") == article_no), {})
+            created_dt = article.get("createdDt")
+            upload_date = unix_timestamp_to_date_str(created_dt) if created_dt else None
+            
+            print(f"[{datetime.now()}] Gemini 처리 시작 : {img_path}")
+            prompt = f"""
                 당신은 데이터 추출 전문가입니다. 주간 식단표 이미지에서 데이터를 추출하세요.
                 1. 정중앙의 '1페이지' 워터마크 무시
                 2. 파란색 칼로리(kcal) 수치 추출
-                3. 아래 JSON 구조로 출력:
-                {
-                    "daily_menus": {
-                        "04월 13일 월요일": {
-                        "lunch_korean": {"items": ["메뉴1", "메뉴2"], "calories": 989, "price": 6000},
-                        "lunch_international": {"items": ["메뉴"], "calories": 1000, "price": 7500},
-                        "dinner_korean": {"items": ["메뉴"], "calories": 800, "price": 6000}
-                        }
-                    }
-                }
+                3. 날짜는 반드시 YYYY-MM-DD 형식으로 변환 (예: 2026-04-13)
+                4. 아래 JSON 구조로 출력:
+                {{
+                    "daily_menus": {{
+                        "2026-04-13": {{
+                        "lunch_korean": {{"items": ["메뉴1", "메뉴2"], "calories": 989, "price": 6000}},
+                        "lunch_international": {{"items": ["메뉴"], "calories": 1000, "price": 7500}},
+                        "dinner_korean": {{"items": ["메뉴"], "calories": 800, "price": 6000}}
+                        }}
+                    }}
+                }}
                 빈 식단은 items에 ["미운영"] 삽입, calories는 null 처리.
+                게시물 업로드 날짜를 고려하세요 : {upload_date}
                 """
             response = client.models.generate_content(
                 model=MODEL_NAME, contents=[img, prompt],
@@ -159,10 +188,6 @@ def update_menu_data():
             except Exception as e:
                 print(f"⚠️ JSON 파싱 실패 articleNo={article_no}: {e}")
                 print(f"응답 원문: {response.text[:500]}")
-            finally:
-                if os.path.exists(temp_img):
-                    os.remove(temp_img)
-                    print(f"[{datetime.now()}] 임시 이미지 삭제 완료: {temp_img}")
 
         if not new_menus:
             print(f"[{datetime.now()}] 새로 추출된 메뉴가 없습니다.")
@@ -180,14 +205,14 @@ def update_menu_data():
         all_menus.update(new_menus)
         print(f"[{datetime.now()}] 전체 메뉴 병합 완료, 총 항목 수: {len(all_menus)}")
 
-        today = datetime.now(KST).date()
-        current_yr = today.year
+        now = datetime.now(KST)
+        today = now.date()
         cleaned_menus = {}
         
         for key, value in all_menus.items():
             try:
-                date_part = key.split(" ")[0] + key.split(" ")[1]
-                dt = datetime.strptime(f"{current_yr}{date_part}", "%Y%m월%d일").date()
+                # yyyy-mm-dd 형식으로 파싱
+                dt = datetime.strptime(key, "%Y-%m-%d").date()
                 if dt >= today:
                     cleaned_menus[key] = value
             except Exception as e:
@@ -206,13 +231,20 @@ def update_menu_data():
             is_updating = False
 
 def generate_kakao_response(days_offset: int, background_tasks: BackgroundTasks):
-    global is_updating
+    global is_updating, last_holiday_check, kr_holidays
+
+    # holiday check (연도 변경시)
+    current_year = datetime.now(KST).year
+    if(last_holiday_check != current_year):
+        kr_holidays = holidays.KR(years=[current_year, current_year + 1])
+        last_holiday_check = current_year
+
+    # response 형성부
     target_date = datetime.now(KST) + timedelta(days=days_offset)
-    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-    target_key = f"{target_date.month:02d}월 {target_date.day:02d}일 {weekdays[target_date.weekday()]}요일"
+    target_key = target_date.strftime("%Y-%m-%d")  # JSON 키는 yyyy-mm-dd 형식
 
     if target_date.weekday() >= 5 or target_date.date() in kr_holidays:
-        return simple_text_response("🛋️  주말이거나 공휴일이에요.")
+        return simple_text_response("❗ 주말이거나 공휴일이에요.")
 
     menu_data = {}
     if os.path.exists(JSON_FILE_PATH):
@@ -234,7 +266,7 @@ def generate_kakao_response(days_offset: int, background_tasks: BackgroundTasks)
             if not is_updating:
                 is_updating = True
                 background_tasks.add_task(update_menu_data)
-        return simple_text_response("🔄 서버가 최신 식단표를 업데이트 중이에요.\n1~2분 뒤에 다시 시도해 주세요!")
+        return simple_text_response("🔄 서버가 식단표를 업데이트 중이에요.\n1~2분 뒤에 다시 시도해 주세요!")
     else:
         return simple_text_response(f"❌ {target_key} 식단은 아직 업로드되지 않았어요.")
 
@@ -242,7 +274,9 @@ def simple_text_response(text):
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": text}}]}}
 
 def format_menu_text(date_key, menu):
-    res = f"🍽️  {date_key} 학식\n\n"
+    # date_key를 yyyy-mm-dd에서 한글 형식으로 변환
+    korean_date = format_date_to_korean(date_key)
+    res = f"🍽️  {korean_date} 학식\n\n"
     for k, label in [("lunch_korean", "🍚 점심(한식)"), ("lunch_international", "🍝 점심(인터)"), ("dinner_korean", "🥘 저녁")]:
         if k in menu:
             m = menu[k]
@@ -254,33 +288,6 @@ def format_menu_text(date_key, menu):
     return simple_text_response(res.strip())
 
 # --- API 엔드포인트 유지 ---
-@app.post("/api/menu_new")
-async def get_menu_with_offset(request: Request, background_tasks: BackgroundTasks):
-    try:
-        try:
-            data = await request.json()
-        except Exception:
-            return simple_text_response("잘못된 요청 형식입니다. 다시 시도해주세요.")
-
-        days_offset = data.get("days_offset")
-
-        if days_offset is None:
-            days_offset = 0
-        elif not isinstance(days_offset, int):
-            try:
-                days_offset = int(days_offset)
-            except (ValueError, TypeError):
-                return simple_text_response("날짜 형식이 올바르지 않습니다.")
-
-        if not (0 <= days_offset <= 5):
-            return simple_text_response("조회 가능한 날짜 범위를 벗어났습니다. (0~5일 사이)")
-
-        return generate_kakao_response(days_offset, background_tasks)
-
-    except Exception as e:
-        print(f"Unexpected Error: {e}") 
-        return simple_text_response("식단을 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
-    
 @app.post("/api/menu")
 async def get_menu_chatbot(request: Request, background_tasks: BackgroundTasks):
     return generate_kakao_response(0, background_tasks)
