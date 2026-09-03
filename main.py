@@ -347,7 +347,7 @@ def generate_kakao_response(days_offset: int, background_tasks: BackgroundTasks)
 
     today_menu = menu_data.get("daily_menus", {}).get(target_key)
     if today_menu:
-        return format_menu_text(target_key, today_menu)
+        return format_menu_list_card(target_key, today_menu)
 
     exists_in_notices = check_date_exists_in_notices(target_date)
     if exists_in_notices:
@@ -364,19 +364,33 @@ def simple_text_response(text: str) -> dict[str, Any]:
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": text}}]}}
 
 
-def format_menu_text(date_key: str, menu: dict[str, Any]) -> dict[str, Any]:
+def format_menu_list_card(date_key: str, menu: dict[str, Any]) -> dict[str, Any]:
     korean_date = format_date_to_korean(date_key)
-    res = f"🍽️  {korean_date} 학식\n\n"
+    card_items = []
+
     for key, label in MEAL_SECTIONS:
         if key in menu:
             meal = menu[key]
-            items = ", ".join(meal.get("items", []))
-            res += f"{label}\n{items}\n"
-            if "미운영" not in items and meal.get("calories"):
-                res += f"({meal['calories']} kcal)\n\n"
-            else:
-                res += "\n"
-    return simple_text_response(res.strip())
+            menu_text = ", ".join(meal.get("items", []))
+            title = label
+            if "미운영" not in menu_text and meal.get("calories"):
+                title += f" · {meal['calories']} kcal"
+
+            card_items.append({"title": title, "description": menu_text})
+
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "listCard": {
+                        "header": {"title": f"🍽️ {korean_date} 학식"},
+                        "items": card_items,
+                    }
+                }
+            ]
+        },
+    }
 
 
 # --- 주말 alive 핑 기반 자동 업데이트 ---
