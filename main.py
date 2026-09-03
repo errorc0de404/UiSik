@@ -25,7 +25,7 @@ last_holiday_check = 2026
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "default")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# -latest/-preview 별칭은 피하고 고정된 stable 모델 체인을 사용.
+# 백업 모델들...
 MODEL_FALLBACK_CHAIN = (
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
@@ -139,7 +139,7 @@ def fetch_menu_list():
         print(f"[{datetime.now()}] 목록 JSON 파싱 성공, 총 항목: {len(list_data.get('list', []))}")
         return list_data
     except Exception:
-        print("⚠️ API 응답이 JSON 형식이 아닙니다. 사이트가 HTML 에러 페이지를 반환했을 수 있습니다.")
+        print("⚠️ API 응답이 JSON 형식이 아닙니다.")
         print(f"응답 내용 일부: {res_list.text[:300]}")
         return None
 
@@ -180,12 +180,6 @@ def save_merged_menu_data(new_menus: dict[str, Any]) -> None:
 def call_gemini_with_retry(
     img: Image.Image, prompt: str, max_retries_per_model: int = 2, base_delay: int = 6
 ):
-    """
-    MODEL_FALLBACK_CHAIN을 순서대로 시도.
-    한 모델에서 429/503/overloaded(용량 문제)가 나면 짧게 재시도하고,
-    그래도 안 되면 다음(다른 세대) 모델로 넘어간다.
-    용량 문제가 아닌 에러(400 등)는 폴백해봐야 의미 없으니 바로 올린다.
-    """
     last_err = None
     for i, model_name in enumerate(MODEL_FALLBACK_CHAIN):
         for attempt in range(1, max_retries_per_model + 1):
@@ -196,7 +190,7 @@ def call_gemini_with_retry(
                     config=types.GenerateContentConfig(response_mime_type="application/json"),
                 )
                 if i > 0:
-                    print(f"[{datetime.now()}] ℹ️ 폴백 모델 사용됨: {model_name}")
+                    print(f"[{datetime.now()}] 모델 변경 : {model_name}")
                 return response
             except Exception as e:
                 err_str = str(e)
@@ -209,15 +203,15 @@ def call_gemini_with_retry(
                     or "overloaded" in err_str.lower()
                 )
                 if not is_capacity_error:
-                    print(f"[{datetime.now()}] ❌ {model_name} 호출 실패(용량 문제 아님, 폴백 안 함): {err_str[:300]}")
+                    print(f"[{datetime.now()}] {model_name} 호출 실패 : {err_str[:300]}")
                     raise
                 if attempt < max_retries_per_model:
                     delay = base_delay * (2 ** (attempt - 1))
-                    print(f"[{datetime.now()}] ⏳ {model_name} 과부하, {delay}초 후 재시도 ({attempt}/{max_retries_per_model})")
+                    print(f"[{datetime.now()}] {model_name} 과부하, {delay}초 후 재시도 ({attempt}/{max_retries_per_model})")
                     time.sleep(delay)
                     continue
-                print(f"[{datetime.now()}] ⚠️ {model_name} 계속 과부하 → 다음 모델로 폴백: {err_str[:150]}")
-    print(f"[{datetime.now()}] ❌ 모든 폴백 모델 실패")
+                print(f"[{datetime.now()}] {model_name} 이용 불가 → 다음 모델로 폴백: {err_str[:150]}")
+    print(f"[{datetime.now()}] 모든 폴백 모델 실패")
     raise last_err
 
 
@@ -347,7 +341,7 @@ def generate_kakao_response(days_offset: int, background_tasks: BackgroundTasks)
 
     today_menu = menu_data.get("daily_menus", {}).get(target_key)
     if today_menu:
-        return format_menu_list_card(target_key, today_menu)
+        return format_menu_text(target_key, today_menu)
 
     exists_in_notices = check_date_exists_in_notices(target_date)
     if exists_in_notices:
@@ -364,33 +358,19 @@ def simple_text_response(text: str) -> dict[str, Any]:
     return {"version": "2.0", "template": {"outputs": [{"simpleText": {"text": text}}]}}
 
 
-def format_menu_list_card(date_key: str, menu: dict[str, Any]) -> dict[str, Any]:
+def format_menu_text(date_key: str, menu: dict[str, Any]) -> dict[str, Any]:
     korean_date = format_date_to_korean(date_key)
-    card_items = []
-
+    res = f"🍽️  {korean_date} 학식\n\n"
     for key, label in MEAL_SECTIONS:
         if key in menu:
             meal = menu[key]
-            menu_text = ", ".join(meal.get("items", []))
-            title = label
-            if "미운영" not in menu_text and meal.get("calories"):
-                title += f" · {meal['calories']} kcal"
-
-            card_items.append({"title": title, "description": menu_text})
-
-    return {
-        "version": "2.0",
-        "template": {
-            "outputs": [
-                {
-                    "listCard": {
-                        "header": {"title": f"🍽️ {korean_date} 학식"},
-                        "items": card_items,
-                    }
-                }
-            ]
-        },
-    }
+            items = ", ".join(meal.get("items", []))
+            res += f"{label}\n{items}\n"
+            if "미운영" not in items and meal.get("calories"):
+                res += f"({meal['calories']} kcal)\n\n"
+            else:
+                res += "\n"
+    return simple_text_response(res.strip())
 
 
 # --- 주말 alive 핑 기반 자동 업데이트 ---
@@ -401,13 +381,6 @@ def get_next_monday(now: datetime):
 
 
 def check_and_trigger_weekend_update(background_tasks: BackgroundTasks) -> None:
-    """
-    주말에 /api/alive 핑이 들어오면:
-      1. 평일이면 그냥 리턴 (주말에만 동작)
-      2. 다음주 월요일 메뉴가 이미 캐시에 있으면 리턴
-      3. 없으면 공지사항에 다음주 식단표가 올라왔는지 확인
-      4. 올라왔으면 백그라운드로 update_menu_data 실행 (금요일에 보통 업로드됨)
-    """
     global is_updating
     now = datetime.now(KST)
 
@@ -457,7 +430,7 @@ async def get_menu_tm2_chatbot(background_tasks: BackgroundTasks):
 
 @app.get("/api/menu_dbg")
 async def get_menu_dbg_chatbot(background_tasks: BackgroundTasks, offset: int = 0):
-    return generate_kakao_response(offset, background_tasks)
+    return generate_kakao_response(offset, background_tasks) # 디버그 췍
 
 
 @app.get("/api/showjson")
